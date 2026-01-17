@@ -15,7 +15,7 @@ SHEET_NAME = None
 ROW_MONTH = 1
 ROW_DAY = 4          # jour du mois / date
 ROW_WEEKDAY = 3      # Mon/Tue/Wed/Fri...
-ROW_TARGET = 37      # codes
+ROW_TARGET = 37      # ligne du technicien sur le tableur
 
 ASTREINTE_CODES = {"-14", "-X"}
 BRIDGE_CODE = "H"

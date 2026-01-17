@@ -8,7 +8,9 @@ import csv
 # =====================
 # CONFIG
 # =====================
-XLSX_PATH = r"D:\Scripts\ROW 2026 FR113 NextGen Schedule 4.1_.xlsx"
+# Chemin du fichier Excel
+BASE_DIR = Path(__file__).resolve().parent
+XLSX_PATH = BASE_DIR / "ROW 2026 FR113 NextGen Schedule 4.1_.xlsx"
 SHEET_NAME = None
 ROW_MONTH = 1
 ROW_DAY = 4          # jour du mois / date
@@ -338,7 +340,7 @@ def _write_clean_csv(path: Path) -> None:
 if EXPORT_CSV:
     csv_path = Path(CSV_OUT)
     _write_clean_csv(csv_path)
-    print(f"\nCSV exporté : {csv_path.resolve()}")
+    print("\nCSV exporté :", csv_path.resolve())
 
 # =====================
 # EXPORT ICS

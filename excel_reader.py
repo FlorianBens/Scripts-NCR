@@ -257,20 +257,88 @@ if unknown_cols:
 # Horodatage JJMMAAHHMM
 timestamp = datetime.now().strftime("%d%m%y%H%M")
 CSV_OUT = f"{CSV_OUT_BASE}_{timestamp}.csv"
-ICS_OUT = f"{ICS_OUT_BASE}_{timestamp}.ics"
+ICS_OUT = f"{ICS_OUT_BASE}_{timestamp}.ics"  # (base, mais l'export ICS utilise des suffixes)
+
+
+def _block_days(s: date, e: date) -> int:
+    return (e - s).days + 1
+
+
+def _all_dates_union(*sets_: set[date]) -> list[date]:
+    u: set[date] = set()
+    for st in sets_:
+        u |= st
+    return sorted(u)
+
+
+def _write_clean_csv(path: Path) -> None:
+    """CSV en 3 sections : SUMMARY / BLOCKS / DAYS (séparées par une ligne vide).
+
+    - Délimiteur ';' (pratique pour Excel FR)
+    - SUMMARY : totaux par catégorie + total jours uniques
+    - BLOCKS  : blocs consécutifs avec nb_jours
+    - DAYS    : ligne par date (0/1 par catégorie)
+    """
+
+    totals = {
+        "astreinte_jours": len(astreinte_days),
+        "astreinte_blocs": len(astreinte_blocks),
+        "conges_jours": len(conges_days),
+        "conges_blocs": len(conges_blocks),
+        "samedi_trav_jours": len(samedi_trav_days),
+        "samedi_trav_blocs": len(samedi_trav_blocks),
+        "repos_hebdo_jours": len(repos_hebdo_days),
+        "repos_hebdo_blocs": len(repos_hebdo_blocks),
+    }
+    totals["total_jours_uniques"] = len(_all_dates_union(astreinte_days, conges_days, samedi_trav_days, repos_hebdo_days))
+
+    with path.open("w", newline="", encoding="utf-8") as f:
+        w = csv.writer(f, delimiter=";")
+
+        # --- SUMMARY ---
+        w.writerow(["# SUMMARY"])
+        w.writerow(["champ", "valeur"])
+        w.writerow(["export_timestamp", timestamp])
+        w.writerow(["xlsx_path", XLSX_PATH])
+        for k, v in totals.items():
+            w.writerow([k, v])
+        if unknown_cols:
+            w.writerow(["warn_unknown_cols_count", len(unknown_cols)])
+
+        w.writerow([])
+
+        # --- BLOCKS ---
+        w.writerow(["# BLOCKS"])
+        w.writerow(["categorie", "debut", "fin", "nb_jours"])
+
+        def write_blocks(cat: str, blocks: list[tuple[date, date]]):
+            for s, e in blocks:
+                w.writerow([cat, fmt(s), fmt(e), _block_days(s, e)])
+
+        write_blocks("astreinte", astreinte_blocks)
+        write_blocks("conges", conges_blocks)
+        write_blocks("samedi_travaille", samedi_trav_blocks)
+        write_blocks("repos_hebdo", repos_hebdo_blocks)
+
+        w.writerow([])
+
+        # --- DAYS ---
+        w.writerow(["# DAYS"])
+        w.writerow(["date", "astreinte", "conges", "samedi_travaille", "repos_hebdo"])
+        for d in _all_dates_union(astreinte_days, conges_days, samedi_trav_days, repos_hebdo_days):
+            w.writerow([
+                fmt(d),
+                1 if d in astreinte_days else 0,
+                1 if d in conges_days else 0,
+                1 if d in samedi_trav_days else 0,
+                1 if d in repos_hebdo_days else 0,
+            ])
+
+
 if EXPORT_CSV:
     csv_path = Path(CSV_OUT)
-    with csv_path.open("w", newline="", encoding="utf-8") as f:
-        w = csv.writer(f)
-        w.writerow(["type", "debut", "fin"])
-        for s, e in astreinte_blocks:
-            w.writerow(["astreinte", fmt(s), fmt(e)])
-        for s, e in conges_blocks:
-            w.writerow(["conges", fmt(s), fmt(e)])
-        for s, e in samedi_trav_blocks:
-            w.writerow(["samedi_travaille", fmt(s), fmt(e)])
-        for s, e in repos_hebdo_blocks:
-            w.writerow(["repos_hebdo", fmt(s), fmt(e)])
+    _write_clean_csv(csv_path)
+    print(f"\nCSV exporté : {csv_path.resolve()}")
 
 # =====================
 # EXPORT ICS

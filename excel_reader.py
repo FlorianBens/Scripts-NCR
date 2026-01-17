@@ -461,7 +461,8 @@ def launch_gui() -> None:
                 do_ics=bool(do_ics_var.get()),
             )
 
-            messagebox.showinfo("OK", "Export termine.\nRegarde la console pour les chemins.")
+            messagebox.showinfo("OK", "Export terminé.")
+            root.destroy()
 
         except Exception as e:
             messagebox.showerror("Erreur", str(e))

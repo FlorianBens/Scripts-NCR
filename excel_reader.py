@@ -6,42 +6,50 @@ from pathlib import Path
 import csv
 
 # =====================
-# CONFIG
+# CONFIG (valeurs par defaut)
 # =====================
-# Chemin du fichier Excel
 BASE_DIR = Path(__file__).resolve().parent
-XLSX_PATH = BASE_DIR / "ROW 2026 FR113 NextGen Schedule 4.1_.xlsx"
+
+# Fichier Excel par defaut (relatif au script)
+DEFAULT_XLSX_PATH = BASE_DIR / "ROW 2026 FR113 NextGen Schedule 4.1_.xlsx"
 SHEET_NAME = None
+
+# Lignes fixes du planning
 ROW_MONTH = 1
 ROW_DAY = 4          # jour du mois / date
-ROW_WEEKDAY = 3      # Mon/Tue/Wed/Fri...
-ROW_TARGET = 37      # ligne du technicien sur le tableur
+ROW_WEEKDAY = 3      # Mon/Tue/Wed/Sat/Sun...
 
+# Ligne cible determinee via la colonne 1 (ex: 'M09')
+DEFAULT_TARGET_LABEL = "M09"
+
+# Codes
 ASTREINTE_CODES = {"-14", "-X"}
 BRIDGE_CODE = "H"
 CONGES_CODES = {"F", "V"}
 
 SAMEDI_TRAVAIL_CODE = 8.5
-SAMEDI_TRAVAIL_WEEKDAY = "sat"
+SAMEDI_TRAVAIL_WEEKDAY = "sat"  # detection 'Sat' / 'Saturday'
 
+# Exports
 EXPORT_CSV = True
-# Les noms finaux seront suffixés avec JJMMAAHHMM
 CSV_OUT_BASE = "exportcsv"
 
 EXPORT_ICS = True
-# --- Export calendriers ICS ---
-EXPORT_ICS_PER_CATEGORY = True   # 1 fichier ICS par catégorie
-EXPORT_ICS_ALL_IN_ONE = False    # + 1 fichier global (tout) si True
 ICS_OUT_BASE = "exportcalendrier"
 ICS_CALNAME = "Astreintes"
 ICS_TIMEZONE = "Europe/Paris"
+
+# Calendrier: 2 options basiques
+# - per_category: 1 fichier ICS par categorie
+# - all_in_one: 1 fichier ICS "tout"
+DEFAULT_ICS_MODE = "per_category"  # "per_category" ou "all_in_one"
+
 ICS_EVENT_TITLE_ASTREINTE = "Astreinte"
-ICS_EVENT_TITLE_CONGES = "Congés"
-ICS_EVENT_TITLE_SAMEDI_TRAV = "Samedi travaillé"
+ICS_EVENT_TITLE_CONGES = "Conges"
+ICS_EVENT_TITLE_SAMEDI_TRAV = "Samedi travaille"
 ICS_EVENT_TITLE_REPOS_HEBDO = "Repos hebdomadaire"
 
 INCLUDE_SINGLE_DAY_CONGES = True
-RUN_TESTS = False
 
 # =====================
 # HELPERS
@@ -65,7 +73,7 @@ def norm(v):
     if v is None:
         return None
     if isinstance(v, (int, float)):
-        return str(v).replace('.0', '')
+        return str(v).replace(".0", "")
     return str(v).strip()
 
 
@@ -75,7 +83,7 @@ def to_float(v):
     if isinstance(v, (int, float)):
         return float(v)
     try:
-        return float(str(v).replace(',', '.'))
+        return float(str(v).replace(",", "."))
     except Exception:
         return None
 
@@ -84,14 +92,12 @@ def is_weekday_sat(v) -> bool:
     return v is not None and str(v).strip().lower().startswith(SAMEDI_TRAVAIL_WEEKDAY)
 
 
-
 def is_samedi_trav_code(v) -> bool:
     f = to_float(v)
     return f is not None and abs(f - SAMEDI_TRAVAIL_CODE) < 1e-9
 
 
 def is_weekend_label(v) -> bool:
-    """True si la ligne 3 indique Sat/Sun (peu importe la casse)."""
     if v is None:
         return False
     s = str(v).strip().lower()
@@ -99,7 +105,6 @@ def is_weekend_label(v) -> bool:
 
 
 def is_repos_hebdo_code(v) -> bool:
-    """Repos hebdo si code = 'X' (exact)."""
     if v is None:
         return False
     return str(v).strip().upper() == "X"
@@ -132,202 +137,154 @@ def ics_escape(s: str) -> str:
 def block_uid(prefix: str, start: date, end: date) -> str:
     return f"{prefix}-{start.isoformat()}_{end.isoformat()}@local"
 
-# =====================
-# READ EXCEL
-# =====================
-wb = load_workbook(XLSX_PATH, data_only=True)
-ws = wb[SHEET_NAME] if SHEET_NAME else wb.active
 
-max_col = ws.max_column
-date_code = {}
-unknown_cols = []
-samedi_trav_days: set[date] = set()
-repos_hebdo_days: set[date] = set()
+def find_row_target(ws, target_label: str) -> int:
+    for r in range(1, ws.max_row + 1):
+        v = ws.cell(row=r, column=1).value
+        if v is not None and str(v).strip() == target_label:
+            return r
+    raise ValueError(f"Ligne cible introuvable : valeur '{target_label}' non trouvee en colonne 1")
 
-for col in range(1, max_col + 1):
-    code_raw = ws.cell(row=ROW_TARGET, column=col).value
-    code = norm(code_raw)
-    if not code:
-        continue
-
-    d = to_date(ws.cell(row=ROW_DAY, column=col).value)
-    if d is None:
-        day = ws.cell(row=ROW_DAY, column=col).value
-        month = ws.cell(row=ROW_MONTH, column=col).value
-        if isinstance(day, (int, float)) and isinstance(month, (int, float)):
-            try:
-                d = date(2026, int(month), int(day))
-            except Exception:
-                pass
-
-    if d is None:
-        unknown_cols.append(col)
-        continue
-
-    wd = ws.cell(row=ROW_WEEKDAY, column=col).value
-    if is_weekday_sat(wd) and is_samedi_trav_code(code_raw):
-        # Samedi travaillé : 8,5 sur un 'Sat' -> événement sur le samedi (même date)
-        samedi_trav_days.add(d)
-
-    # Repos hebdomadaire : si 'X' et que le libellé jour n'est pas Sat/Sun
-    if is_repos_hebdo_code(code_raw) and not is_weekend_label(wd):
-        repos_hebdo_days.add(d)
-
-    priority = {"-14": 3, "-X": 3, "H": 2, "F": 1, "V": 1}
-    prev = date_code.get(d)
-    if prev is None or priority.get(code, 0) > priority.get(prev, 0):
-        date_code[d] = code
 
 # =====================
-# COMPUTE SETS
+# CORE
 # =====================
-sorted_days = sorted(date_code.items())
-astreinte_days = set()
-conges_days = set()
 
-for d, c in sorted_days:
-    if c in ASTREINTE_CODES:
-        astreinte_days.add(d)
-    if c in CONGES_CODES:
-        conges_days.add(d)
+def compute_from_excel(xlsx_path: Path, target_label: str):
+    wb = load_workbook(xlsx_path, data_only=True)
+    ws = wb[SHEET_NAME] if SHEET_NAME else wb.active
 
-# H pont
-seg = []
-segments = []
-prev_d = None
-for d, c in sorted_days:
-    if prev_d is None or (d - prev_d).days == 1:
-        seg.append((d, c))
-    else:
-        segments.append(seg)
-        seg = [(d, c)]
-    prev_d = d
-if seg:
-    segments.append(seg)
+    row_target = find_row_target(ws, target_label)
 
-for seg in segments:
-    i = 0
-    while i < len(seg):
-        if seg[i][1] in ASTREINTE_CODES:
-            j = i + 1
-            while j < len(seg) and seg[j][1] == BRIDGE_CODE:
-                j += 1
-            if j < len(seg) and seg[j][1] in ASTREINTE_CODES:
-                for k in range(i + 1, j):
-                    astreinte_days.add(seg[k][0])
-            i = j
+    max_col = ws.max_column
+    date_code: dict[date, str] = {}
+    unknown_cols: list[int] = []
+
+    samedi_trav_days: set[date] = set()
+    repos_hebdo_days: set[date] = set()
+
+    for col in range(1, max_col + 1):
+        code_raw = ws.cell(row=row_target, column=col).value
+        code = norm(code_raw)
+        if not code:
+            continue
+
+        d = to_date(ws.cell(row=ROW_DAY, column=col).value)
+        if d is None:
+            day = ws.cell(row=ROW_DAY, column=col).value
+            month = ws.cell(row=ROW_MONTH, column=col).value
+            if isinstance(day, (int, float)) and isinstance(month, (int, float)):
+                try:
+                    d = date(2026, int(month), int(day))
+                except Exception:
+                    pass
+
+        if d is None:
+            unknown_cols.append(col)
+            continue
+
+        wd = ws.cell(row=ROW_WEEKDAY, column=col).value
+
+        # Samedi travaille : 8,5 sur un 'Sat' -> evenement le samedi (meme date)
+        if is_weekday_sat(wd) and is_samedi_trav_code(code_raw):
+            samedi_trav_days.add(d)
+
+        # Repos hebdomadaire : si 'X' et que le libelle jour n'est pas Sat/Sun
+        if is_repos_hebdo_code(code_raw) and not is_weekend_label(wd):
+            repos_hebdo_days.add(d)
+
+        # date_code standard (astreintes/conges/H)
+        priority = {"-14": 3, "-X": 3, "H": 2, "F": 1, "V": 1}
+        prev = date_code.get(d)
+        if prev is None or priority.get(code, 0) > priority.get(prev, 0):
+            date_code[d] = code
+
+    # Sets
+    sorted_days = sorted(date_code.items())
+    astreinte_days: set[date] = set()
+    conges_days: set[date] = set()
+
+    for d, c in sorted_days:
+        if c in ASTREINTE_CODES:
+            astreinte_days.add(d)
+        if c in CONGES_CODES:
+            conges_days.add(d)
+
+    # H pont
+    seg = []
+    segments = []
+    prev_d = None
+    for d, c in sorted_days:
+        if prev_d is None or (d - prev_d).days == 1:
+            seg.append((d, c))
         else:
-            i += 1
+            segments.append(seg)
+            seg = [(d, c)]
+        prev_d = d
+    if seg:
+        segments.append(seg)
 
-# =====================
-# BLOCKS
-# =====================
-astreinte_blocks = group_consecutive_days(astreinte_days)
-conges_blocks = filter_conges_blocks(group_consecutive_days(conges_days), INCLUDE_SINGLE_DAY_CONGES)
-samedi_trav_blocks = group_consecutive_days(samedi_trav_days)
-repos_hebdo_blocks = group_consecutive_days(repos_hebdo_days)
+    for seg in segments:
+        i = 0
+        while i < len(seg):
+            if seg[i][1] in ASTREINTE_CODES:
+                j = i + 1
+                while j < len(seg) and seg[j][1] == BRIDGE_CODE:
+                    j += 1
+                if j < len(seg) and seg[j][1] in ASTREINTE_CODES:
+                    for k in range(i + 1, j):
+                        astreinte_days.add(seg[k][0])
+                i = j
+            else:
+                i += 1
 
-# =====================
-# DISPLAY
-# =====================
-print("\n=== ASTREINTES ===")
-print(f"Jours : {len(astreinte_days)} | Blocs : {len(astreinte_blocks)}")
-for s, e in astreinte_blocks:
-    print(f"Astreinte : {fmt(s)}" if s == e else f"Astreinte : {fmt(s)} -> {fmt(e)}")
+    # Blocks
+    astreinte_blocks = group_consecutive_days(astreinte_days)
+    conges_blocks = filter_conges_blocks(group_consecutive_days(conges_days), INCLUDE_SINGLE_DAY_CONGES)
+    samedi_trav_blocks = group_consecutive_days(samedi_trav_days)
+    repos_hebdo_blocks = group_consecutive_days(repos_hebdo_days)
 
-print("\n=== CONGÉS ===")
-print(f"Jours : {len(conges_days)} | Blocs : {len(conges_blocks)}")
-for s, e in conges_blocks:
-    print(f"Congés : {fmt(s)}" if s == e else f"Congés : {fmt(s)} -> {fmt(e)}")
-
-print("\n=== SAMEDI TRAVAILLÉ ===")
-print(f"Jours : {len(samedi_trav_days)} | Blocs : {len(samedi_trav_blocks)}")
-for s, e in samedi_trav_blocks:
-    print(f"Samedi travaillé : {fmt(s)}" if s == e else f"Samedi travaillé : {fmt(s)} -> {fmt(e)}")
-
-print("\n=== REPOS HEBDOMADAIRE ===")
-print(f"Jours : {len(repos_hebdo_days)} | Blocs : {len(repos_hebdo_blocks)}")
-for s, e in repos_hebdo_blocks:
-    print(f"Repos hebdo : {fmt(s)}" if s == e else f"Repos hebdo : {fmt(s)} -> {fmt(e)}")
-
-if unknown_cols:
-    print("\n[WARN] Colonnes sans date exploitable :", unknown_cols)
-
-# =====================
-# EXPORT CSV
-# =====================
-# Horodatage JJMMAAHHMM
-timestamp = datetime.now().strftime("%d%m%y%H%M")
-CSV_OUT = f"{CSV_OUT_BASE}_{timestamp}.csv"
-ICS_OUT = f"{ICS_OUT_BASE}_{timestamp}.ics"  # (base, mais l'export ICS utilise des suffixes)
-
-
-def _block_days(s: date, e: date) -> int:
-    return (e - s).days + 1
-
-
-def _all_dates_union(*sets_: set[date]) -> list[date]:
-    u: set[date] = set()
-    for st in sets_:
-        u |= st
-    return sorted(u)
-
-
-def _write_clean_csv(path: Path) -> None:
-    """CSV en 3 sections : SUMMARY / BLOCKS / DAYS (séparées par une ligne vide).
-
-    - Délimiteur ';' (pratique pour Excel FR)
-    - SUMMARY : totaux par catégorie + total jours uniques
-    - BLOCKS  : blocs consécutifs avec nb_jours
-    - DAYS    : ligne par date (0/1 par catégorie)
-    """
-
-    totals = {
-        "astreinte_jours": len(astreinte_days),
-        "astreinte_blocs": len(astreinte_blocks),
-        "conges_jours": len(conges_days),
-        "conges_blocs": len(conges_blocks),
-        "samedi_trav_jours": len(samedi_trav_days),
-        "samedi_trav_blocs": len(samedi_trav_blocks),
-        "repos_hebdo_jours": len(repos_hebdo_days),
-        "repos_hebdo_blocs": len(repos_hebdo_blocks),
+    return {
+        "xlsx_path": xlsx_path,
+        "target_label": target_label,
+        "unknown_cols": unknown_cols,
+        "astreinte_days": astreinte_days,
+        "conges_days": conges_days,
+        "samedi_trav_days": samedi_trav_days,
+        "repos_hebdo_days": repos_hebdo_days,
+        "astreinte_blocks": astreinte_blocks,
+        "conges_blocks": conges_blocks,
+        "samedi_trav_blocks": samedi_trav_blocks,
+        "repos_hebdo_blocks": repos_hebdo_blocks,
     }
-    totals["total_jours_uniques"] = len(_all_dates_union(astreinte_days, conges_days, samedi_trav_days, repos_hebdo_days))
 
-    with path.open("w", newline="", encoding="utf-8") as f:
+
+def export_csv(result: dict, timestamp: str) -> Path:
+    csv_out = Path(f"{CSV_OUT_BASE}_{timestamp}.csv")
+
+    astreinte_days = result["astreinte_days"]
+    conges_days = result["conges_days"]
+    samedi_trav_days = result["samedi_trav_days"]
+    repos_hebdo_days = result["repos_hebdo_days"]
+
+    astreinte_blocks = result["astreinte_blocks"]
+    conges_blocks = result["conges_blocks"]
+    samedi_trav_blocks = result["samedi_trav_blocks"]
+    repos_hebdo_blocks = result["repos_hebdo_blocks"]
+
+    with csv_out.open("w", newline="", encoding="utf-8") as f:
         w = csv.writer(f, delimiter=";")
-
-        # --- SUMMARY ---
         w.writerow(["# SUMMARY"])
-        w.writerow(["champ", "valeur"])
-        w.writerow(["export_timestamp", timestamp])
-        w.writerow(["xlsx_path", XLSX_PATH])
-        for k, v in totals.items():
-            w.writerow([k, v])
-        if unknown_cols:
-            w.writerow(["warn_unknown_cols_count", len(unknown_cols)])
-
+        w.writerow(["categorie", "jours", "blocs"])
+        w.writerow(["astreinte", len(astreinte_days), len(astreinte_blocks)])
+        w.writerow(["conges", len(conges_days), len(conges_blocks)])
+        w.writerow(["samedi_travaille", len(samedi_trav_days), len(samedi_trav_blocks)])
+        w.writerow(["repos_hebdo", len(repos_hebdo_days), len(repos_hebdo_blocks)])
         w.writerow([])
-
-        # --- BLOCKS ---
-        w.writerow(["# BLOCKS"])
-        w.writerow(["categorie", "debut", "fin", "nb_jours"])
-
-        def write_blocks(cat: str, blocks: list[tuple[date, date]]):
-            for s, e in blocks:
-                w.writerow([cat, fmt(s), fmt(e), _block_days(s, e)])
-
-        write_blocks("astreinte", astreinte_blocks)
-        write_blocks("conges", conges_blocks)
-        write_blocks("samedi_travaille", samedi_trav_blocks)
-        write_blocks("repos_hebdo", repos_hebdo_blocks)
-
-        w.writerow([])
-
-        # --- DAYS ---
         w.writerow(["# DAYS"])
         w.writerow(["date", "astreinte", "conges", "samedi_travaille", "repos_hebdo"])
-        for d in _all_dates_union(astreinte_days, conges_days, samedi_trav_days, repos_hebdo_days):
+        all_days = sorted(astreinte_days | conges_days | samedi_trav_days | repos_hebdo_days)
+        for d in all_days:
             w.writerow([
                 fmt(d),
                 1 if d in astreinte_days else 0,
@@ -336,22 +293,10 @@ def _write_clean_csv(path: Path) -> None:
                 1 if d in repos_hebdo_days else 0,
             ])
 
-
-if EXPORT_CSV:
-    csv_path = Path(CSV_OUT)
-    _write_clean_csv(csv_path)
-    print("\nCSV exporté :", csv_path.resolve())
-
-# =====================
-# EXPORT ICS
-# =====================
-# NOTE: si EXPORT_ICS_PER_CATEGORY=True, on génère 1 fichier par catégorie.
-#       si EXPORT_ICS_ALL_IN_ONE=True, on génère aussi un fichier "tout".
-#       si EXPORT_ICS_PER_CATEGORY=False, on génère uniquement le fichier "tout".
+    return csv_out
 
 
 def write_ics(path: Path, calname: str, events: list[tuple[str, str, date, date]]) -> None:
-    """Ecrit un fichier ICS (événements journée entière)."""
     lines: list[str] = [
         "BEGIN:VCALENDAR",
         "VERSION:2.0",
@@ -379,23 +324,173 @@ def write_ics(path: Path, calname: str, events: list[tuple[str, str, date, date]
     path.write_text("\r\n".join(lines) + "\r\n", encoding="utf-8")
 
 
-if EXPORT_ICS:
-    # Nom de fichier : exportcalendrier_<suffix>_JJMMAAHHMM.ics
-    def ics_path_for(suffix: str) -> Path:
-        return Path(f"{ICS_OUT_BASE}_{suffix}_{timestamp}.ics")
+def export_ics(result: dict, timestamp: str, mode: str) -> list[Path]:
+    """mode: 'per_category' ou 'all_in_one'"""
+    out_paths: list[Path] = []
 
-    events_astreintes = [(ICS_EVENT_TITLE_ASTREINTE, "astreinte", s, e) for s, e in astreinte_blocks]
-    events_conges = [(ICS_EVENT_TITLE_CONGES, "conges", s, e) for s, e in conges_blocks]
-    events_samedi = [(ICS_EVENT_TITLE_SAMEDI_TRAV, "samedi_travaille", s, e) for s, e in samedi_trav_blocks]
-    events_repos = [(ICS_EVENT_TITLE_REPOS_HEBDO, "repos_hebdo", s, e) for s, e in repos_hebdo_blocks]
+    ab = result["astreinte_blocks"]
+    cb = result["conges_blocks"]
+    sb = result["samedi_trav_blocks"]
+    rb = result["repos_hebdo_blocks"]
 
-    events_all = events_astreintes + events_conges + events_samedi + events_repos
+    events_astreintes = [(ICS_EVENT_TITLE_ASTREINTE, "astreinte", s, e) for s, e in ab]
+    events_conges = [(ICS_EVENT_TITLE_CONGES, "conges", s, e) for s, e in cb]
+    events_samedi = [(ICS_EVENT_TITLE_SAMEDI_TRAV, "samedi_travaille", s, e) for s, e in sb]
+    events_repos = [(ICS_EVENT_TITLE_REPOS_HEBDO, "repos_hebdo", s, e) for s, e in rb]
 
-    if EXPORT_ICS_PER_CATEGORY:
-        write_ics(ics_path_for("astreintes"), "Astreintes", events_astreintes)
-        write_ics(ics_path_for("conges"), "Congés", events_conges)
-        write_ics(ics_path_for("samedi_travaille"), "Samedi travaillé", events_samedi)
-        write_ics(ics_path_for("repos_hebdo"), "Repos hebdomadaire", events_repos)
+    if mode == "per_category":
+        p1 = Path(f"{ICS_OUT_BASE}_astreintes_{timestamp}.ics")
+        write_ics(p1, "Astreintes", events_astreintes)
+        out_paths.append(p1)
 
-    if EXPORT_ICS_ALL_IN_ONE or not EXPORT_ICS_PER_CATEGORY:
-        write_ics(ics_path_for("tout"), ICS_CALNAME, events_all)
+        p2 = Path(f"{ICS_OUT_BASE}_conges_{timestamp}.ics")
+        write_ics(p2, "Conges", events_conges)
+        out_paths.append(p2)
+
+        p3 = Path(f"{ICS_OUT_BASE}_samedi_travaille_{timestamp}.ics")
+        write_ics(p3, "Samedi travaille", events_samedi)
+        out_paths.append(p3)
+
+        p4 = Path(f"{ICS_OUT_BASE}_repos_hebdo_{timestamp}.ics")
+        write_ics(p4, "Repos hebdomadaire", events_repos)
+        out_paths.append(p4)
+
+    elif mode == "all_in_one":
+        all_events = events_astreintes + events_conges + events_samedi + events_repos
+        p = Path(f"{ICS_OUT_BASE}_tout_{timestamp}.ics")
+        write_ics(p, ICS_CALNAME, all_events)
+        out_paths.append(p)
+
+    else:
+        raise ValueError("mode doit etre 'per_category' ou 'all_in_one'")
+
+    return out_paths
+
+
+def run_pipeline(xlsx_path: Path, target_label: str, ics_mode: str, do_csv: bool, do_ics: bool) -> dict:
+    ts = datetime.now().strftime("%d%m%y%H%M")
+    result = compute_from_excel(xlsx_path=xlsx_path, target_label=target_label)
+
+    csv_file = None
+    ics_files: list[Path] = []
+
+    if do_csv:
+        csv_file = export_csv(result, ts)
+
+    if do_ics:
+        ics_files = export_ics(result, ts, ics_mode)
+
+    # Console recap
+    print("\n=== RECAP ===")
+    print(f"Target: {target_label}")
+    print(f"Astreintes : {len(result['astreinte_days'])} jours / {len(result['astreinte_blocks'])} blocs")
+    print(f"Conges     : {len(result['conges_days'])} jours / {len(result['conges_blocks'])} blocs")
+    print(f"Samedi trav: {len(result['samedi_trav_days'])} jours / {len(result['samedi_trav_blocks'])} blocs")
+    print(f"Repos hebdo: {len(result['repos_hebdo_days'])} jours / {len(result['repos_hebdo_blocks'])} blocs")
+    if result["unknown_cols"]:
+        print(f"[WARN] Colonnes sans date exploitable: {len(result['unknown_cols'])}")
+
+    if csv_file:
+        print("CSV exporte :", csv_file.resolve())
+    for p in ics_files:
+        print("ICS exporte :", p.resolve())
+
+    result["timestamp"] = ts
+    result["csv_file"] = csv_file
+    result["ics_files"] = ics_files
+    return result
+
+
+# =====================
+# GUI (Tkinter)
+# =====================
+
+def launch_gui() -> None:
+    import tkinter as tk
+    from tkinter import ttk, messagebox, filedialog
+
+    root = tk.Tk()
+    root.title("Export planning (Excel -> CSV/ICS)")
+    root.geometry("560x320")
+
+    # Vars
+    xlsx_var = tk.StringVar(value=str(DEFAULT_XLSX_PATH))
+    target_var = tk.StringVar(value=DEFAULT_TARGET_LABEL)
+    ics_mode_var = tk.StringVar(value=DEFAULT_ICS_MODE)
+    do_csv_var = tk.BooleanVar(value=EXPORT_CSV)
+    do_ics_var = tk.BooleanVar(value=EXPORT_ICS)
+
+    def browse_xlsx():
+        p = filedialog.askopenfilename(
+            title="Choisir le fichier Excel",
+            filetypes=[("Excel", "*.xlsx"), ("Tous fichiers", "*")],
+            initialdir=str(BASE_DIR),
+        )
+        if p:
+            xlsx_var.set(p)
+
+    def run_clicked():
+        try:
+            xlsx_path = Path(xlsx_var.get()).expanduser().resolve()
+            if not xlsx_path.exists():
+                raise FileNotFoundError(f"Fichier introuvable: {xlsx_path}")
+
+            target = target_var.get().strip()
+            if not target:
+                raise ValueError("TARGET_LABEL vide")
+
+            mode = ics_mode_var.get()
+            if mode not in ("per_category", "all_in_one"):
+                raise ValueError("Mode calendrier invalide")
+
+            run_pipeline(
+                xlsx_path=xlsx_path,
+                target_label=target,
+                ics_mode=mode,
+                do_csv=bool(do_csv_var.get()),
+                do_ics=bool(do_ics_var.get()),
+            )
+
+            messagebox.showinfo("OK", "Export termine.\nRegarde la console pour les chemins.")
+
+        except Exception as e:
+            messagebox.showerror("Erreur", str(e))
+
+    pad = {"padx": 10, "pady": 6}
+
+    frm = ttk.Frame(root)
+    frm.pack(fill="both", expand=True, **pad)
+
+    # XLSX
+    ttk.Label(frm, text="Fichier Excel (.xlsx)").grid(row=0, column=0, sticky="w")
+    xlsx_entry = ttk.Entry(frm, textvariable=xlsx_var, width=55)
+    xlsx_entry.grid(row=1, column=0, sticky="we")
+    ttk.Button(frm, text="Parcourir...", command=browse_xlsx).grid(row=1, column=1, sticky="e", padx=8)
+
+    # Target
+    ttk.Label(frm, text="Target label (colonne A) ex: M09").grid(row=2, column=0, sticky="w")
+    ttk.Entry(frm, textvariable=target_var, width=20).grid(row=3, column=0, sticky="w")
+
+    # Options export
+    opts = ttk.LabelFrame(frm, text="Exports")
+    opts.grid(row=4, column=0, columnspan=2, sticky="we", pady=10)
+
+    ttk.Checkbutton(opts, text="Exporter CSV", variable=do_csv_var).grid(row=0, column=0, sticky="w", padx=10, pady=6)
+    ttk.Checkbutton(opts, text="Exporter calendrier (ICS)", variable=do_ics_var).grid(row=1, column=0, sticky="w", padx=10, pady=6)
+
+    ttk.Label(opts, text="Mode calendrier:").grid(row=0, column=1, sticky="w", padx=10)
+    ttk.Radiobutton(opts, text="1 ICS par categorie", value="per_category", variable=ics_mode_var).grid(row=1, column=1, sticky="w", padx=10)
+    ttk.Radiobutton(opts, text="1 ICS tout-en-un", value="all_in_one", variable=ics_mode_var).grid(row=2, column=1, sticky="w", padx=10)
+
+    # Run
+    ttk.Button(frm, text="Lancer l'export", command=run_clicked).grid(row=5, column=0, sticky="w")
+
+    # layout
+    frm.columnconfigure(0, weight=1)
+
+    root.mainloop()
+
+
+if __name__ == "__main__":
+    # Par defaut: GUI. Si tu preferes la console, commente launch_gui() et appelle run_pipeline(...)
+    launch_gui()

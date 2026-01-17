@@ -4,6 +4,7 @@ from openpyxl import load_workbook
 from datetime import datetime, date, timedelta
 from pathlib import Path
 import csv
+import codecs
 
 # =====================
 # CONFIG (valeurs par defaut)
@@ -295,33 +296,42 @@ def export_csv(result: dict, timestamp: str) -> Path:
 
     return csv_out
 
-
 def write_ics(path: Path, calname: str, events: list[tuple[str, str, date, date]]) -> None:
-    lines: list[str] = [
+    """Ecrit un fichier ICS ALL-DAY valide sans lignes vides pour compatibilité maximale."""
+    if not events:
+        return
+
+    lines = [
         "BEGIN:VCALENDAR",
         "VERSION:2.0",
-        "PRODID:-//excel_reader//FR",
+        "PRODID:-//ExcelReader//FR",
         "CALSCALE:GREGORIAN",
+        "METHOD:PUBLISH",
         f"X-WR-CALNAME:{ics_escape(calname)}",
-        f"X-WR-TIMEZONE:{ics_escape(ICS_TIMEZONE)}",
     ]
 
-    dtstamp = datetime.utcnow().strftime("%Y%m%dT%H%M%SZ")
+    dtstamp = datetime.now().strftime("%Y%m%dT%H%M%SZ")
 
-    for title, prefix, s, e in events:
-        uid = ics_escape(block_uid(prefix, s, e))
-        lines.extend([
-            "BEGIN:VEVENT",
-            f"UID:{uid}",
-            f"DTSTAMP:{dtstamp}",
-            f"DTSTART;VALUE=DATE:{s.strftime('%Y%m%d')}",
-            f"DTEND;VALUE=DATE:{(e + timedelta(days=1)).strftime('%Y%m%d')}",
-            f"SUMMARY:{ics_escape(title)}",
-            "END:VEVENT",
-        ])
+    for idx, (title, prefix, s, e) in enumerate(events, start=1):
+        uid = f"{prefix}-{s.strftime('%Y%m%d')}-{idx}@excelreader"
+        lines.append("BEGIN:VEVENT")
+        lines.append(f"UID:{uid}")
+        lines.append(f"DTSTAMP:{dtstamp}")
+        lines.append(f"DTSTART;VALUE=DATE:{s.strftime('%Y%m%d')}")
+        # La date de fin doit être le lendemain du dernier jour (standard ICS)
+        lines.append(f"DTEND;VALUE=DATE:{(e + timedelta(days=1)).strftime('%Y%m%d')}")
+        lines.append(f"SUMMARY:{ics_escape(title)}")
+        lines.append("END:VEVENT")
 
     lines.append("END:VCALENDAR")
-    path.write_text("\r\n".join(lines) + "\r\n", encoding="utf-8")
+    
+    # On nettoie les lignes et on force le format de fin de ligne réseau (\r\n) sans lignes vides
+    content = "\r\n".join([l for l in lines if l.strip()]) + "\r\n"
+
+    # Important: newline="" empêche Python de doubler les \r sur Windows
+    with path.open("w", encoding="utf-8", newline="") as f:
+        f.write(content)
+
 
 
 def export_ics(result: dict, timestamp: str, mode: str) -> list[Path]:
@@ -422,7 +432,7 @@ def launch_gui() -> None:
 
     def browse_xlsx():
         p = filedialog.askopenfilename(
-            title="Choisir le fichier Excel",
+            title="Choisir le fichier Excel du planning",
             filetypes=[("Excel", "*.xlsx"), ("Tous fichiers", "*")],
             initialdir=str(BASE_DIR),
         )
@@ -468,7 +478,7 @@ def launch_gui() -> None:
     ttk.Button(frm, text="Parcourir...", command=browse_xlsx).grid(row=1, column=1, sticky="e", padx=8)
 
     # Target
-    ttk.Label(frm, text="Target label (colonne A) ex: M09").grid(row=2, column=0, sticky="w")
+    ttk.Label(frm, text="Votre Numéro de CSR (exemple pour FR113M08, entrer M08").grid(row=2, column=0, sticky="w")
     ttk.Entry(frm, textvariable=target_var, width=20).grid(row=3, column=0, sticky="w")
 
     # Options export

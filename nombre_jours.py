@@ -5,7 +5,8 @@ import csv
 # =========================
 # CONFIG
 # =========================
-XLSX_PATH = r"D:\Scripts\ROW 2026 FR113 NextGen Schedule 4.1_.xlsx"
+BASE_DIR = Path(__file__).resolve().parent
+XLSX_PATH = BASE_DIR / "ROW 2026 FR113 NextGen Schedule 4.1_.xlsx"
 SHEET_NAME = None  # None = feuille active
 
 START_ROW = 2      # première ligne technicien (à ajuster si besoin)
@@ -16,8 +17,8 @@ START_DAY_COL = 3  # colonnes des jours = à partir de la 3 (après ID + nom)
 # Ligne qui contient les jours de semaine ("Sat", ...)
 ROW_WEEKDAY = 3
 
-OUT_CSV_ASTREINTE = r"D:\Scripts\classement_astreintes.csv"
-OUT_CSV_SAMEDI = r"D:\Scripts\classement_samedis_travailles.csv"
+OUT_CSV_ASTREINTE = BASE_DIR / "classement_astreintes.csv"
+OUT_CSV_SAMEDI = BASE_DIR / "classement_samedis_travailles.csv"
 
 PREFIX_ID = "FR113"
 
@@ -103,12 +104,32 @@ def main():
     combined_results = []
 
     for r in range(START_ROW, max_row + 1):
+        # IGNORER totalement la ligne 2
+        if r == 2:
+            continue
         # IGNORER toute ligne sans valeur en colonne A
         raw_id = ws.cell(r, COL_ID).value
-        if raw_id is None or str(raw_id).strip() == "":
+        raw_name = ws.cell(r, COL_NAME).value
+
+        # IGNORER toute ligne sans valeur en colonne A OU B
+        if raw_id is None or str(raw_id).strip() == "" or raw_name is None or str(raw_name).strip() == "":
             continue
 
-        name = norm(ws.cell(r, COL_NAME).value)
+        # IGNORER aussi les lignes "header" (ex: "CE Name") ou celles où la colonne B est un lien
+        raw_name_str = str(raw_name).strip()
+        raw_name_low = raw_name_str.lower()
+        is_header_name = raw_name_low == "ce name"
+        is_link = (
+            raw_name_low.startswith("http://")
+            or raw_name_low.startswith("https://")
+            or raw_name_low.startswith("www.")
+            or "hyperlink(" in raw_name_low
+            or raw_name_low.startswith("=hyperlink(")
+        )
+        if is_header_name or is_link:
+            continue
+
+        name = norm(raw_name)
 
         tech_id = f"{PREFIX_ID}{norm(raw_id)}"
 
@@ -133,7 +154,11 @@ def main():
     combined_results.sort(key=lambda x: (-x[2], -x[3], x[1].lower(), x[0]))
 
     # 4) Console
+    nb_tech_total = len(astreinte_results)
+    nb_tech_astreinte_non_nulle = sum(1 for _, _, c in astreinte_results if c > 0)
+
     print("=== Classement astreintes (jours) ===")
+    print(f"Techniciens faisant de l'astreinte : {nb_tech_astreinte_non_nulle}/{nb_tech_total}")
     for tech_id, name, count in astreinte_results:
         print(f"{tech_id} | {name} | {count}")
 

@@ -21,7 +21,6 @@ L’objectif est de partir d’un **planning Excel brut** et d’obtenir :
   - `openpyxl` (lecture des fichiers Excel)
 
 Installation :
-```bash
 pip install openpyxl
 
 ## Script 1 — Lecture du planning Excel
@@ -143,5 +142,4 @@ Si l’option overwrite est activée :
 - Dates obligatoirement au format : YYYYMMDD
 - DTEND exclusif obligatoire (sinon erreurs / affichage incorrect)
 - Éviter les caractères non échappés dans SUMMARY / DESCRIPTION
-
 

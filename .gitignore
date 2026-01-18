@@ -1,0 +1,11 @@
+# Ignore everything by default
+*
+
+# Allow Python source files
+!*.py
+
+# Allow Windows executables
+!*.exe
+
+# Allow directories so Git can traverse them
+!*/
